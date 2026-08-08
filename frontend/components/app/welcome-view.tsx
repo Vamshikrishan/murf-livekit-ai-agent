@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button';
+import { Hero } from '@/components/app/hero';
 
 function WelcomeImage() {
   return (
@@ -30,20 +31,8 @@ export const WelcomeView = ({
 }: React.ComponentProps<'div'> & WelcomeViewProps) => {
   return (
     <div ref={ref}>
-      <section className="bg-background flex flex-col items-center justify-center text-center">
-        <WelcomeImage />
-
-        <p className="text-foreground max-w-prose pt-1 leading-6 font-medium">
-          Chat live with your voice AI agent
-        </p>
-
-        <Button
-          size="lg"
-          onClick={onStartCall}
-          className="mt-6 w-64 rounded-full font-mono text-xs font-bold tracking-wider uppercase"
-        >
-          {startButtonText}
-        </Button>
+      <section className="bg-background flex flex-col items-center justify-center text-center px-4">
+        <Hero onStart={onStartCall} />
       </section>
 
       <div className="fixed bottom-5 left-0 flex w-full items-center justify-center">

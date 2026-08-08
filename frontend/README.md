@@ -73,13 +73,13 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
 
 Set `audioVisualizerType` in [`app-config.ts`](app-config.ts):
 
-| Type | Description | Key options |
-|------|-------------|-------------|
-| `bar` (default) | Vertical bars | `audioVisualizerBarCount` |
-| `grid` | Dot grid | `audioVisualizerGridRowCount`, `audioVisualizerGridColumnCount` |
-| `radial` | Circular bars | `audioVisualizerRadialBarCount`, `audioVisualizerRadialRadius` |
-| `wave` | Oscilloscope wave | `audioVisualizerWaveLineWidth` |
-| `aura` | Shader-based glow | `audioVisualizerAuraColorShift` |
+| Type            | Description       | Key options                                                     |
+| --------------- | ----------------- | --------------------------------------------------------------- |
+| `bar` (default) | Vertical bars     | `audioVisualizerBarCount`                                       |
+| `grid`          | Dot grid          | `audioVisualizerGridRowCount`, `audioVisualizerGridColumnCount` |
+| `radial`        | Circular bars     | `audioVisualizerRadialBarCount`, `audioVisualizerRadialRadius`  |
+| `wave`          | Oscilloscope wave | `audioVisualizerWaveLineWidth`                                  |
+| `aura`          | Shader-based glow | `audioVisualizerAuraColorShift`                                 |
 
 Use `audioVisualizerColor` / `audioVisualizerColorDark` to set accent colors across all modes.
 
@@ -125,6 +125,7 @@ frontend/
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/murf-ai/murf-livekit-starter&root-directory=frontend&env=LIVEKIT_URL,LIVEKIT_API_KEY,LIVEKIT_API_SECRET&project-name=murf-voice-agent&repository-name=murf-voice-agent)
 
 Set these environment variables:
+
 - `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`
 - `AGENT_NAME` (optional — for explicit agent dispatch)
 
@@ -135,6 +136,25 @@ The frontend and backend don't call each other directly — they both connect to
 - [LiveKit Agents UI](https://livekit.io/ui)
 - [LiveKit JavaScript SDK](https://github.com/livekit/client-sdk-js)
 - [LiveKit Docs](https://docs.livekit.io)
+
+## Day 3 — Frontend Personalization
+
+This repo includes the Day 3 frontend personalization for the Murf Falcon challenge. Changes include:
+
+- Branded hero and CTA on the welcome screen mentioning Murf Falcon and recommended voices (Anisha, Samar, Pooja).
+- A persistent session status indicator showing Ready, Connecting, Listening, Speaking, and Call ended states.
+- A friendly microphone permission banner with retry and dismiss actions.
+- Integration with the existing LiveKit voice flow — start, talk, end, and restart are supported.
+
+To test Day 3 locally:
+
+```bash
+cd frontend
+pnpm install
+pnpm dev
+```
+
+Open the app and click the Start button. If microphone access is denied, use the Retry or dismiss controls in the banner.
 
 ## License
 

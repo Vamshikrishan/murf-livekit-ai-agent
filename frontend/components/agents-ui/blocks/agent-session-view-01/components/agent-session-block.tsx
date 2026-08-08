@@ -2,12 +2,15 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, type MotionProps, motion } from 'motion/react';
+import { Track } from 'livekit-client';
 import { useAgent, useSessionContext, useSessionMessages } from '@livekit/components-react';
 import { AgentChatTranscript } from '@/components/agents-ui/agent-chat-transcript';
 import {
   AgentControlBar,
   type AgentControlBarControls,
 } from '@/components/agents-ui/agent-control-bar';
+import { StatusIndicator } from '@/components/app/status-indicator';
+import { MicErrorBanner } from '@/components/app/mic-error-banner';
 import { Shimmer } from '@/components/ai-elements/shimmer';
 import { cn } from '@/lib/shadcn/utils';
 import { TileLayout } from './tile-view';
@@ -180,6 +183,7 @@ export function AgentSessionView_01({
   const [chatOpen, setChatOpen] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const { state: agentState } = useAgent();
+  const [micError, setMicError] = useState<string | undefined>(undefined);
 
   const controls: AgentControlBarControls = {
     leave: true,
@@ -204,6 +208,8 @@ export function AgentSessionView_01({
       className={cn('bg-background relative z-10 h-full w-full overflow-hidden', className)}
       {...props}
     >
+      <StatusIndicator className="absolute top-6 right-6 z-60" />
+      <MicErrorBanner message={micError} onClear={() => setMicError(undefined)} />
       <Fade top className="absolute inset-x-4 top-0 z-10 h-40" />
       {/* transcript */}
 
@@ -265,6 +271,15 @@ export function AgentSessionView_01({
             isChatOpen={chatOpen}
             isConnected={session.isConnected}
             onDisconnect={session.end}
+            onDeviceError={(err) => {
+              if (err.source === Track.Source.Microphone) {
+                const name = (err.error as any)?.name ?? '';
+                const msg = err.error?.message ?? String(err.error ?? '');
+                if (name === 'NotAllowedError' || /permission/i.test(msg)) {
+                  setMicError(msg || 'Microphone permission denied');
+                }
+              }
+            }}
             onIsChatOpenChange={setChatOpen}
           />
         </div>
