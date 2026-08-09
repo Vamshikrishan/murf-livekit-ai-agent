@@ -68,6 +68,18 @@ uv run python src/agent.py start
 
 All configuration lives in [`src/agent.py`](src/agent.py).
 
+## Day 4 — Persistent Memory
+
+This backend now supports persistent caller memory using SQLite.
+
+- `backend/memory.db` stores caller memory on disk.
+- `backend/src/memory.py` initializes the database and provides `lookup_user` and `save_user_memory`.
+- The agent asks for explicit consent before saving any personal information.
+- Returning callers are recognized by a stable `participant_identity` supplied from the frontend.
+- Stored fields include `user_id`, `name`, `language_preference`, `facts`, and `last_interaction`.
+
+The new memory tools are integrated into the agent through LiveKit function tools, so the LLM decides when to look up or save caller memory instead of using hardcoded prompt examples.
+
 ### System prompt
 
 The `SYSTEM_PROMPT` constant at the top of `agent.py` controls what your agent does. Change it to build any voice-powered use case.

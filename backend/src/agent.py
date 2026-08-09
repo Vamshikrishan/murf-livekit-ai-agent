@@ -8,13 +8,17 @@ from livekit.agents import (
     AgentSession,
     JobContext,
     JobProcess,
+    RunContext,
     cli,
+    function_tool,
     inference,
     tokenize,
     room_io,
 )
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+
+import memory
 
 logger = logging.getLogger("agent")
 
@@ -160,25 +164,68 @@ Hello! I'm AarogyaMitra, your multilingual AI health assistant. I can help you u
 
 
 class Assistant(Agent):
-    def __init__(self) -> None:
-        super().__init__(instructions=SYSTEM_PROMPT)
+    def __init__(self, instructions: str = SYSTEM_PROMPT) -> None:
+        super().__init__(instructions=instructions)
 
-    # To add tools, use the @function_tool decorator.
-    # Here's an example that adds a simple weather tool.
-    # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
-    # @function_tool
-    # async def lookup_weather(self, context: RunContext, location: str):
-    #     """Use this tool to look up current weather information in the given location.
-    #
-    #     If the location is not supported by the weather service, the tool will indicate this. You must tell the user the location's weather is unavailable.
-    #
-    #     Args:
-    #         location: The location to look up weather information for (e.g. city name)
-    #     """
-    #
-    #     logger.info(f"Looking up weather for {location}")
-    #
-    #     return "sunny with a temperature of 70 degrees."
+    @function_tool(
+        name="lookup_user",
+        description="Look up persistent caller memory by stable user ID. Returns stored name, language preference, facts, and last interaction if found.",
+    )
+    async def lookup_user(self, context: RunContext, user_id: str):
+        """Look up a caller's saved memory.
+
+        Args:
+            user_id: The stable caller identifier used to retrieve memory.
+        """
+
+        logger.info(f"Looking up memory for user_id={user_id}")
+        result = memory.lookup_user(user_id)
+        if result is None:
+            return {
+                "status": "not_found",
+                "message": "No stored memory was found for this caller.",
+            }
+
+        return {
+            "status": "found",
+            "user": result,
+        }
+
+    @function_tool(
+        name="save_user_memory",
+        description="Save or update caller memory after explicit consent. Use it only when the caller authorizes storing the information.",
+    )
+    async def save_user_memory(
+        self,
+        context: RunContext,
+        user_id: str,
+        name: str | None = None,
+        language_preference: str | None = None,
+        facts: dict | None = None,
+        last_interaction: str | None = None,
+    ):
+        """Save or update persistent caller memory.
+
+        Args:
+            user_id: The stable caller identifier.
+            name: Caller name if available.
+            language_preference: Preferred language for future conversations.
+            facts: Useful, non-sensitive facts to remember.
+            last_interaction: ISO timestamp of the latest interaction.
+        """
+
+        logger.info(f"Saving memory for user_id={user_id}")
+        saved = memory.save_user_memory(
+            user_id=user_id,
+            name=name,
+            language_preference=language_preference,
+            facts=facts,
+            last_interaction=last_interaction,
+        )
+        return {
+            "status": "saved",
+            "user": saved,
+        }
 
 
 server = AgentServer()
@@ -203,7 +250,7 @@ async def my_agent(ctx: JobContext):
     session = AgentSession(
         # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
         # See all available models at https://docs.livekit.io/agents/models/stt/
-        stt=deepgram.STT(model="nova-3"),
+        stt=deepgram.STT(model="nova-3", language="multi"),
         # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
         # See all available models at https://docs.livekit.io/agents/models/llm/
         llm=google.LLM(
@@ -213,7 +260,6 @@ async def my_agent(ctx: JobContext):
         # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
         tts=murf.TTS(
                 voice="Anisha",
-                locale="en-IN",
                 style="Conversation",
                 tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
                 text_pacing=True
@@ -246,9 +292,28 @@ async def my_agent(ctx: JobContext):
     # # Start the avatar and wait for it to join
     # await avatar.start(session, room=ctx.room)
 
+    # Initialize the persistent memory database if needed.
+    memory.init_db()
+
+    user_id = ctx.local_participant_identity
+    if not user_id:
+        user_id = ctx.room.name
+
+    dynamic_prompt = SYSTEM_PROMPT + f"""
+
+# PERSISTENT MEMORY
+A stable caller identifier is available as user_id = \"{user_id}\".
+If the caller is known, call lookup_user(user_id) before responding.
+If lookup_user returns stored memory, greet the caller by name and refer naturally to one relevant saved fact.
+If you learn a useful personal detail, ask the caller for explicit permission before saving.
+If the caller says yes, call save_user_memory(user_id=..., name=..., language_preference=..., facts=..., last_interaction=...).
+If the caller says no or refuses, do not save any new information.
+Use clear phrases like "Would you like me to remember that for future conversations?" before saving.
+"""
+
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(),
+        agent=Assistant(instructions=dynamic_prompt),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(

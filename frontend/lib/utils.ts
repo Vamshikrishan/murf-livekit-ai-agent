@@ -97,7 +97,21 @@ export function getStyles(appConfig: AppConfig) {
  */
 export function getSandboxTokenSource(appConfig: AppConfig) {
   return TokenSource.custom(async () => {
-    const url = new URL(process.env.NEXT_PUBLIC_CONN_DETAILS_ENDPOINT!, window.location.origin);
+    const storageKey = 'voice_assistant_user_id';
+    let participantIdentity = window.localStorage.getItem(storageKey);
+
+    if (!participantIdentity) {
+      participantIdentity = `voice_assistant_user_${Math.floor(Math.random() * 100000000)}`;
+      window.localStorage.setItem(storageKey, participantIdentity);
+    }
+
+    const endpoint =
+      typeof process.env.NEXT_PUBLIC_CONN_DETAILS_ENDPOINT === 'string' &&
+      process.env.NEXT_PUBLIC_CONN_DETAILS_ENDPOINT.length > 0
+        ? process.env.NEXT_PUBLIC_CONN_DETAILS_ENDPOINT
+        : '/api/token';
+
+    const url = new URL(endpoint, window.location.origin);
     const sandboxId = appConfig.sandboxId ?? '';
     const roomConfig = appConfig.agentName
       ? {
@@ -114,6 +128,7 @@ export function getSandboxTokenSource(appConfig: AppConfig) {
         },
         body: JSON.stringify({
           room_config: roomConfig,
+          participant_identity: participantIdentity,
         }),
       });
       return await res.json();

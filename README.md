@@ -172,6 +172,36 @@ If the agent doesn't connect, double-check that both services point to the same 
 
 The default system prompt makes this a **customer support agent**. You can change the agent’s behavior by editing the prompt.
 
+## Day 4 — Persistent Memory
+
+This project now includes persistent caller memory using SQLite.
+
+- `backend/memory.db` stores caller records on disk.
+- `backend/src/memory.py` manages the database and provides `lookup_user` and `save_user_memory`.
+- The agent asks the caller for permission before saving any personal information.
+- Returning callers are recognized with a stable identity stored in browser `localStorage`.
+- Useful remembered fields include `user_id`, `name`, `language_preference`, `facts`, and `last_interaction`.
+- Multilingual STT uses `deepgram.STT(model="nova-3", language="multi")` and the agent responds in the caller’s language.
+
+### How it works
+
+1. The frontend stores a stable caller identity in `localStorage` and sends it to `/api/token`.
+2. The backend uses that stable `participantIdentity` as `user_id` for memory lookup.
+3. The agent uses `lookup_user(user_id)` to retrieve existing memory.
+4. If the caller agrees, the agent saves updated memory with `save_user_memory(...)`.
+
+### Where memory is stored
+
+- `backend/memory.db`
+
+### What is stored
+
+- `user_id`
+- `name`
+- `language_preference`
+- `facts` (JSON)
+- `last_interaction`
+
 **Where the prompt lives:** `backend/src/agent.py`- the `SYSTEM_PROMPT` constant (near the top of the file, after the imports). Change that string to change what your voice agent does.
 
 ### Example prompts (copy-paste)
