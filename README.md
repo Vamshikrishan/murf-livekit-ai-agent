@@ -228,6 +228,51 @@ See the Configuration section below for voice, STT, and LLM options.
 
 ---
 
+## Day 5 — Weather Tool and Tool Calling
+
+This project now includes a real weather tool integrated into the voice agent.
+
+- The weather tool is implemented in `backend/src/agent.py` as a LiveKit function tool called `weather_lookup`.
+- It uses the Open-Meteo public APIs for geocoding and current weather data, with no API key required.
+- The tool resolves the requested city name to latitude and longitude, then fetches current weather facts.
+- Returned data includes:
+  - location name and country
+  - current temperature in Celsius
+  - apparent/feels-like temperature if available
+  - weather condition description
+  - precipitation and rain information
+  - wind speed
+  - observation time
+- If the tool cannot find the location or the external service fails, the agent responds naturally and does not invent weather information.
+- The new tool works alongside the existing memory and Murf Falcon TTS architecture.
+
+### How it works
+
+1. The user asks a weather question naturally, for example: "What is the weather in Hyderabad?"
+2. The LLM decides whether the request should call the `weather_lookup` tool based on the tool description.
+3. If the tool is called, it resolves the city using Open-Meteo geocoding and fetches live weather data.
+4. The tool returns structured weather information to the agent.
+5. The agent speaks the result naturally through Murf Falcon TTS.
+
+### Example user questions
+
+- "What is the weather in Hyderabad?"
+- "What is the temperature in Mumbai?"
+- "How is the weather in Delhi today?"
+- "Will it rain in Hyderabad today?"
+- "Do I need an umbrella in Bengaluru?"
+
+### Example responses
+
+- "The current temperature in Hyderabad is 29°C with partly cloudy skies."
+- "In Mumbai, it feels like 32°C and there is a light chance of rain this hour."
+- "Delhi is overcast right now with a gentle wind and no heavy rain expected."
+- "I couldn't access the weather service right now, so I can't give a reliable update."
+
+The LLM decides when to call the weather tool automatically. Normal conversation and non-weather requests stay on the existing voice assistant path.
+
+---
+
 ## Configuration
 
 ### Murf voice

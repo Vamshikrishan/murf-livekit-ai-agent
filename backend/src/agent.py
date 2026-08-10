@@ -1,4 +1,12 @@
+import json
 import logging
+import socket
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Optional
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote_plus
+from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -15,14 +23,133 @@ from livekit.agents import (
     tokenize,
     room_io,
 )
-from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
-from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from livekit.plugins import murf, silero, google, deepgram
+
+try:
+    from livekit.plugins.turn_detector.multilingual import MultilingualModel
+except ImportError:
+    MultilingualModel = None
+
+try:
+    import livekit.plugins.noise_cancellation as noise_cancellation
+except ImportError:
+    noise_cancellation = None
 
 import memory
 
 logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
+
+OPEN_METEO_GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
+OPEN_METEO_WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
+OPEN_METEO_USER_AGENT = "AarogyaMitraWeatherTool/1.0"
+
+WEATHER_CODE_MAP = {
+    0: "Clear sky",
+    1: "Mainly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Fog or mist",
+    48: "Fog with depositing rime",
+    51: "Light drizzle",
+    53: "Moderate drizzle",
+    55: "Dense drizzle",
+    56: "Freezing drizzle",
+    57: "Freezing drizzle",
+    61: "Light rain",
+    63: "Moderate rain",
+    65: "Heavy rain",
+    66: "Freezing rain",
+    67: "Freezing rain",
+    71: "Light snow",
+    73: "Moderate snow",
+    75: "Heavy snow",
+    77: "Snow grains",
+    80: "Rain showers",
+    81: "Moderate rain showers",
+    82: "Violent rain showers",
+    85: "Snow showers",
+    86: "Heavy snow showers",
+    95: "Thunderstorm",
+    96: "Thunderstorm with hail",
+    99: "Thunderstorm with heavy hail",
+}
+
+
+def _http_get_json(url: str, timeout: int = 10) -> Optional[Dict[str, Any]]:
+    request = Request(url, headers={"User-Agent": OPEN_METEO_USER_AGENT})
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            payload = response.read().decode("utf-8")
+            return json.loads(payload)
+    except (HTTPError, URLError, socket.timeout, ValueError):
+        return None
+
+
+def _geocode_location(location: str) -> Optional[Dict[str, Any]]:
+    if not location or not location.strip():
+        return None
+
+    query = quote_plus(location.strip())
+    url = f"{OPEN_METEO_GEOCODING_URL}?name={query}&count=1&language=en&format=json"
+    data = _http_get_json(url)
+    if not data or not isinstance(data, dict):
+        return None
+
+    results = data.get("results")
+    if not results or not isinstance(results, list):
+        return None
+
+    return results[0]
+
+
+def _weather_description(code: int) -> str:
+    return WEATHER_CODE_MAP.get(code, "Weather condition")
+
+
+def _fetch_weather(latitude: float, longitude: float, timezone: str) -> Optional[Dict[str, Any]]:
+    url = (
+        f"{OPEN_METEO_WEATHER_URL}?latitude={latitude}&longitude={longitude}"
+        f"&current_weather=true&hourly=apparent_temperature,precipitation&timezone={quote_plus(timezone)}"
+    )
+    data = _http_get_json(url)
+    if not data or not isinstance(data, dict):
+        return None
+
+    current = data.get("current_weather")
+    hourly = data.get("hourly") or {}
+    if not current or not isinstance(current, dict):
+        return None
+
+    observation_time = current.get("time")
+    temperature = current.get("temperature")
+    weather_code = current.get("weathercode")
+    wind_speed = current.get("windspeed")
+
+    apparent_temp = None
+    precipitation = None
+    if hourly:
+        time_index = None
+        times = hourly.get("time") or []
+        if observation_time in times:
+            time_index = times.index(observation_time)
+        if time_index is not None:
+            apparent_values = hourly.get("apparent_temperature") or []
+            precipitation_values = hourly.get("precipitation") or []
+            if len(apparent_values) > time_index:
+                apparent_temp = apparent_values[time_index]
+            if len(precipitation_values) > time_index:
+                precipitation = precipitation_values[time_index]
+
+    return {
+        "observation_time": observation_time,
+        "temperature_c": temperature,
+        "apparent_temperature_c": apparent_temp,
+        "condition": _weather_description(weather_code) if isinstance(weather_code, int) else "Unknown",
+        "precipitation_mm": precipitation,
+        "wind_speed_kmh": wind_speed,
+    }
 
 # Change this prompt to change what your voice agent does.
 # See README.md for example prompts (customer support, language tutor, receptionist).
@@ -168,6 +295,75 @@ class Assistant(Agent):
         super().__init__(instructions=instructions)
 
     @function_tool(
+        name="weather_lookup",
+        description=(
+            "Get current weather information for a city or location. "
+            "Use this tool when the user asks about current weather, temperature, rain, wind, or weather conditions. "
+            "The tool requires a location string and returns factual, external weather data only. "
+            "Do not use this tool for unrelated questions or to invent weather information."
+        ),
+    )
+    async def weather_lookup(self, context: RunContext, location: str):
+        """Fetch current weather for the requested location using Open-Meteo."""
+        logger.info("Weather lookup requested for location=%s", location)
+
+        if not location or not location.strip():
+            return {
+                "status": "error",
+                "message": (
+                    "Location is required to fetch current weather information. "
+                    "Please provide a city or place name."
+                ),
+            }
+
+        location_data = _geocode_location(location)
+        if not location_data:
+            return {
+                "status": "error",
+                "message": (
+                    "I could not find the requested location. "
+                    "Please try a different city or spelling."
+                ),
+            }
+
+        latitude = location_data.get("latitude")
+        longitude = location_data.get("longitude")
+        name = location_data.get("name")
+        country = location_data.get("country")
+        timezone = location_data.get("timezone") or "auto"
+
+        if latitude is None or longitude is None:
+            return {
+                "status": "error",
+                "message": (
+                    "The location was found, but I could not resolve its coordinates. "
+                    "Please try a different city or location."
+                ),
+            }
+
+        weather = _fetch_weather(latitude, longitude, timezone)
+        if not weather:
+            return {
+                "status": "error",
+                "message": (
+                    "Sorry, I could not retrieve current weather information from the external weather service right now. "
+                    "Please try again later."
+                ),
+            }
+
+        return {
+            "status": "ok",
+            "source": "open-meteo",
+            "location": {
+                "name": name,
+                "country": country,
+                "latitude": latitude,
+                "longitude": longitude,
+            },
+            "weather": weather,
+        }
+
+    @function_tool(
         name="lookup_user",
         description="Look up persistent caller memory by stable user ID. Returns stored name, language preference, facts, and last interaction if found.",
     )
@@ -266,7 +462,7 @@ async def my_agent(ctx: JobContext):
             ),
         # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
         # See more at https://docs.livekit.io/agents/build/turns
-        turn_detection=MultilingualModel(),
+        turn_detection=MultilingualModel() if MultilingualModel is not None else None,
         vad=ctx.proc.userdata["vad"],
         # allow the LLM to generate a response while waiting for the end of turn
         # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
@@ -309,6 +505,14 @@ If you learn a useful personal detail, ask the caller for explicit permission be
 If the caller says yes, call save_user_memory(user_id=..., name=..., language_preference=..., facts=..., last_interaction=...).
 If the caller says no or refuses, do not save any new information.
 Use clear phrases like "Would you like me to remember that for future conversations?" before saving.
+
+# TOOL USAGE
+Use the weather_lookup tool only when the user asks for current weather information, temperature, rain, wind, or weather conditions for a specific city or location.
+The weather_lookup tool uses an external weather service and returns factual information only. If the location cannot be resolved, or the service is unavailable, do not invent weather details.
+If the user asks about weather without a location and the location is known from conversation context or memory, use that remembered location.
+
+# LANGUAGE & SCRIPT
+Always write every language in its own native script. Hindi responses must use Devanagari script, never romanized Hindi.
 """
 
     # Start the session, which initializes the voice pipeline and warms up the models
@@ -317,17 +521,19 @@ Use clear phrases like "Would you like me to remember that for future conversati
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
-                noise_cancellation=lambda params: (
-                    noise_cancellation.BVCTelephony()
-                    if params.participant.kind
-                    == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
-                    else noise_cancellation.BVC()
-                ),
-            ),
+                noise_cancellation=(
+                    None
+                    if noise_cancellation is None
+                    else lambda params: (
+                        noise_cancellation.BVCTelephony()
+                        if params.participant.kind
+                        == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+                        else noise_cancellation.BVC()
+                    )
+                )
+            )
         ),
     )
-
-    # Join the room and connect to the user
     await ctx.connect()
 
 
