@@ -1,7 +1,10 @@
 import json
 import logging
+import os
+import random
 import socket
-from datetime import datetime
+import string
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.error import HTTPError, URLError
@@ -39,6 +42,7 @@ logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
+# ── Open-Meteo weather constants ─────────────────────────────────────────────
 OPEN_METEO_GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 OPEN_METEO_WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_USER_AGENT = "AarogyaMitraWeatherTool/1.0"
@@ -149,8 +153,67 @@ def _fetch_weather(latitude: float, longitude: float, timezone: str) -> Optional
         "wind_speed_kmh": wind_speed,
     }
 
-# Change this prompt to change what your voice agent does.
-# See README.md for example prompts (customer support, language tutor, receptionist).
+
+# ── Escalation helpers ────────────────────────────────────────────────────────
+
+def _generate_reference_id() -> str:
+    """Generate a unique escalation reference ID in the format ESC-YYYYMMDD-XXXXXX."""
+    date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
+    suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    return f"ESC-{date_part}-{suffix}"
+
+
+def _send_discord_webhook(webhook_url: str, payload: dict) -> bool:
+    """Send a Discord webhook message. Returns True on success, False on failure.
+    Never logs the webhook URL itself."""
+    body = json.dumps(payload).encode("utf-8")
+    req = Request(
+        webhook_url,
+        data=body,
+        headers={"Content-Type": "application/json", "User-Agent": "AarogyaMitra-Escalation/1.0"},
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=10) as resp:
+            return resp.status in (200, 204)
+    except (HTTPError, URLError, socket.timeout, ValueError) as exc:
+        logger.error("Discord webhook delivery failed: %s", type(exc).__name__)
+        return False
+
+
+def _build_discord_message(
+    reference_id: str,
+    urgency: str,
+    problem_description: str,
+    agent_action: str,
+    caller_language: str,
+    preferred_followup: str,
+    created_at: str,
+) -> dict:
+    """Build the Discord embed/content payload. No secrets included."""
+    urgency_emoji = {
+        "EMERGENCY": "🚨",
+        "HIGH": "🔴",
+        "MEDIUM": "🟡",
+        "LOW": "🟢",
+    }.get(urgency, "ℹ️")
+
+    content = (
+        f"{urgency_emoji} **NEW HUMAN ASSISTANCE REQUEST**\n\n"
+        f"**Reference ID:** `{reference_id}`\n"
+        f"**Urgency:** {urgency}\n\n"
+        f"**Problem:**\n{problem_description}\n\n"
+        f"**Agent action:**\n{agent_action}\n\n"
+        f"**Language:** {caller_language}\n"
+        f"**Preferred follow-up:** {preferred_followup}\n\n"
+        f"**Status:** OPEN\n"
+        f"**Created:** {created_at}"
+    )
+    return {"content": content}
+
+
+# ── System Prompt ────────────────────────────────────────────────────────────
+
 SYSTEM_PROMPT = """# IDENTITY
 
 You are AarogyaMitra, a multilingual AI voice health assistant built for Bharat.
@@ -235,6 +298,9 @@ Immediately respond:
 
 Do not continue giving medical advice before encouraging emergency care.
 
+After recommending emergency care, offer human assistance:
+"I can also create a human assistance request so someone can follow up with you. Would you like me to do that? I would share a brief summary of what you told me, the urgency, your preferred language, and your preferred follow-up method."
+
 # PRIVACY
 
 Never ask for or store:
@@ -248,7 +314,7 @@ Never ask for or store:
 
 If users voluntarily share health information, use it only during the current conversation.
 
-# LANGUAGE
+# LANGUAGE & SCRIPT
 
 Reply in the same language used by the user whenever possible.
 
@@ -258,10 +324,19 @@ Support:
 - Telugu
 - Natural Indian code-mixed conversations
 
-Hindi must always be written in Devanagari script.
-Telugu must always be written in Telugu script.
+Always write every language in its own native script.
 
-Never use Romanized Hindi or Romanized Telugu.
+Hindi → Devanagari script only.
+Correct example: नमस्ते, मैं आपकी मदद कर सकता हूँ।
+Incorrect: Namaste, main aapki madad kar sakta hoon.
+
+Telugu → Telugu script only.
+Correct example: నమస్కారం, నేను మీకు సహాయం చేయగలను.
+Incorrect: Namaskaram, nenu meeku sahayam cheyagalanu.
+
+English → English script.
+
+Never romanize Hindi or Telugu in any response. This is a hard rule.
 
 # CONVERSATION STYLE
 
@@ -289,6 +364,45 @@ If you're unsure about something, say:
 
 "I'm not certain about that. It's best to consult a qualified healthcare professional."
 
+# HUMAN ESCALATION
+
+You know when human help is appropriate.
+
+Escalate to a human support request when:
+
+1. The caller reports a potentially life-threatening emergency (chest pain, breathing difficulty, stroke, severe bleeding, unconsciousness, poisoning, seizures, suicidal thoughts, serious accidents, etc.)
+2. The caller asks you to diagnose them ("Do I have diabetes?", "Is this dengue?", "What disease do I have?", "Can you diagnose me?")
+3. The caller clearly needs qualified human medical assistance beyond what you can provide
+
+For emergencies: always recommend emergency medical services FIRST, before offering escalation.
+
+For diagnosis requests: explain you cannot diagnose, then offer human assistance.
+
+CONSENT IS MANDATORY before creating any escalation request.
+
+Before calling create_escalation, you MUST explain:
+"I can create a request for human assistance. I would share a short summary of what you told me, the urgency, your preferred language, and your preferred follow-up method. Is that okay?"
+
+Only call create_escalation if the user gives clear permission.
+
+Affirmative responses: "yes", "okay", "sure", "go ahead", "please do", "that's fine", "हाँ", "ठीक है", "అవును"
+Refusal responses: "no", "don't", "cancel", "I don't want that", "नहीं", "వద్దు"
+
+If the user refuses:
+- Do NOT call create_escalation
+- Do NOT send any information
+- Acknowledge their decision kindly: "That's completely fine. I won't share any information."
+- Continue supporting them safely
+
+After a successful escalation:
+- Tell the caller their reference ID
+- Explain the request is open
+- Do NOT promise an immediate human response
+
+Do not diagnose.
+Do not pretend to be a doctor.
+Do not promise an immediate human response.
+
 # FIRST GREETING
 
 Hello! I'm AarogyaMitra, your multilingual AI health assistant. I can help you understand common health topics, healthy habits, nutrition, fitness, and wellness in simple language. How can I help you today?
@@ -298,6 +412,8 @@ Hello! I'm AarogyaMitra, your multilingual AI health assistant. I can help you u
 class Assistant(Agent):
     def __init__(self, instructions: str = SYSTEM_PROMPT) -> None:
         super().__init__(instructions=instructions)
+        # Track escalations created this session to prevent duplicates
+        self._escalated_ref_ids: set[str] = set()
 
     @function_tool(
         name="weather_lookup",
@@ -335,7 +451,7 @@ class Assistant(Agent):
         longitude = location_data.get("longitude")
         name = location_data.get("name")
         country = location_data.get("country")
-        timezone = location_data.get("timezone") or "auto"
+        tz = location_data.get("timezone") or "auto"
 
         if latitude is None or longitude is None:
             return {
@@ -346,7 +462,7 @@ class Assistant(Agent):
                 ),
             }
 
-        weather = _fetch_weather(latitude, longitude, timezone)
+        weather = _fetch_weather(latitude, longitude, tz)
         if not weather:
             return {
                 "status": "error",
@@ -379,7 +495,7 @@ class Assistant(Agent):
             user_id: The stable caller identifier used to retrieve memory.
         """
 
-        logger.info(f"Looking up memory for user_id={user_id}")
+        logger.info("Looking up memory for user_id=%s", user_id)
         result = memory.lookup_user(user_id)
         if result is None:
             return {
@@ -415,7 +531,7 @@ class Assistant(Agent):
             last_interaction: ISO timestamp of the latest interaction.
         """
 
-        logger.info(f"Saving memory for user_id={user_id}")
+        logger.info("Saving memory for user_id=%s", user_id)
         saved = memory.save_user_memory(
             user_id=user_id,
             name=name,
@@ -427,6 +543,132 @@ class Assistant(Agent):
             "status": "saved",
             "user": saved,
         }
+
+    @function_tool(
+        name="create_escalation",
+        description=(
+            "Create a human assistance request after the caller has given explicit consent. "
+            "Call this ONLY when the user has clearly said yes to sharing their information. "
+            "Never call this tool without prior user consent. "
+            "Use urgency='EMERGENCY' for life-threatening symptoms, 'HIGH' for serious non-emergency issues, "
+            "'MEDIUM' for diagnosis requests, 'LOW' for general human support requests. "
+            "Do not include passwords, OTPs, Aadhaar numbers, financial information, insurance numbers, "
+            "medical record numbers, or full conversation transcripts."
+        ),
+    )
+    async def create_escalation(
+        self,
+        context: RunContext,
+        urgency: str,
+        problem_description: str,
+        agent_action: str,
+        caller_language: str,
+        preferred_followup: str,
+    ):
+        """Create a human escalation request and send it to the configured destination.
+
+        Args:
+            urgency: One of EMERGENCY, HIGH, MEDIUM, or LOW.
+            problem_description: Short description of what the caller reported. No sensitive data.
+            agent_action: What AarogyaMitra already did (e.g. recommended emergency services).
+            caller_language: Language the caller used (e.g. English, Hindi, Telugu).
+            preferred_followup: How the caller wants to be reached (e.g. Phone, WhatsApp, Email).
+        """
+
+        # Normalise and validate urgency
+        urgency = (urgency or "MEDIUM").strip().upper()
+        if urgency not in ("EMERGENCY", "HIGH", "MEDIUM", "LOW"):
+            urgency = "MEDIUM"
+
+        # Generate a unique reference ID
+        reference_id = _generate_reference_id()
+
+        # Duplicate-prevention: if an identical problem description was already
+        # escalated this session, return the existing reference without re-sending.
+        problem_key = problem_description.strip().lower()[:120]
+        if problem_key in self._escalated_ref_ids:
+            logger.warning(
+                "Duplicate escalation detected for problem key, suppressing re-send."
+            )
+            return {
+                "status": "duplicate",
+                "message": "A human assistance request for this issue was already created this session.",
+            }
+        self._escalated_ref_ids.add(problem_key)
+
+        created_at = datetime.now(timezone.utc).isoformat()
+
+        # Build the structured escalation record (no secrets)
+        escalation_record = {
+            "reference_id": reference_id,
+            "urgency": urgency,
+            "problem_description": problem_description,
+            "agent_action": agent_action,
+            "caller_language": caller_language,
+            "preferred_followup": preferred_followup,
+            "created_at": created_at,
+            "status": "OPEN",
+        }
+
+        logger.info(
+            "Creating escalation reference_id=%s urgency=%s language=%s",
+            reference_id,
+            urgency,
+            caller_language,
+        )
+
+        # Send to Discord webhook
+        webhook_url = os.environ.get("DISCORD_ESCALATION_WEBHOOK_URL", "").strip()
+        if not webhook_url:
+            logger.warning(
+                "DISCORD_ESCALATION_WEBHOOK_URL is not configured — escalation record created locally only."
+            )
+            return {
+                "status": "created_locally",
+                "reference_id": reference_id,
+                "message": (
+                    "Your request has been recorded. Human escalation delivery is currently unavailable, "
+                    "but your reference ID is ready."
+                ),
+                "escalation": escalation_record,
+            }
+
+        discord_payload = _build_discord_message(
+            reference_id=reference_id,
+            urgency=urgency,
+            problem_description=problem_description,
+            agent_action=agent_action,
+            caller_language=caller_language,
+            preferred_followup=preferred_followup,
+            created_at=created_at,
+        )
+
+        delivered = _send_discord_webhook(webhook_url, discord_payload)
+
+        if delivered:
+            logger.info("Escalation delivered to Discord successfully reference_id=%s", reference_id)
+            return {
+                "status": "created",
+                "reference_id": reference_id,
+                "message": (
+                    f"Your request has been created successfully. "
+                    f"Your reference ID is {reference_id}. "
+                    "A human support request is now open. "
+                    "Please note that response times may vary."
+                ),
+                "escalation": escalation_record,
+            }
+        else:
+            logger.error("Escalation Discord delivery failed reference_id=%s", reference_id)
+            return {
+                "status": "delivery_failed",
+                "reference_id": reference_id,
+                "message": (
+                    "Your request has been recorded but could not be delivered right now. "
+                    f"Your reference ID is {reference_id}. Please keep this for follow-up."
+                ),
+                "escalation": escalation_record,
+            }
 
 
 server = AgentServer()
@@ -441,59 +683,35 @@ server.setup_fnc = prewarm
 
 @server.rtc_session(agent_name="my-agent")
 async def my_agent(ctx: JobContext):
-    # Logging setup
-    # Add any other context you want in all log entries here
+    # Logging setup — no credentials logged here
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
 
-    # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
+    # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and Silero VAD.
+    # turn_detection is intentionally None: the local turn-detector DLL can fail on
+    # some Windows environments. Silero VAD alone is sufficient for stable operation.
     session = AgentSession(
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
-        # See all available models at https://docs.livekit.io/agents/models/stt/
+        # STT: Deepgram nova-3 with multilingual support (English, Hindi, Telugu, etc.)
         stt=deepgram.STT(model="nova-3", language="multi"),
-        # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
-        # See all available models at https://docs.livekit.io/agents/models/llm/
+        # LLM: Gemini for conversational health Q&A
         llm=google.LLM(
-                model="gemini-3.5-flash-lite",
-            ),
-        # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
-        # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
-        tts=murf.TTS(
-        voice="Anisha",
-        locale="en-IN",
-        style="Conversation",
-        tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
-        text_pacing=True,
+            model="gemini-3.5-flash-lite",
         ),
-        # VAD and turn detection are used to determine when the user is speaking and when the agent should respond.
-        # The local turn detector is intentionally disabled here because it can fail to initialize on some Windows
-        # environments due to native inference DLL issues.
+        # TTS: Murf Falcon — the fastest TTS API — voice Anisha (Indian English)
+        tts=murf.TTS(
+            voice="Anisha",
+            locale="en-IN",
+            style="Conversation",
+            tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
+            text_pacing=True,
+        ),
+        # VAD-only turn detection (local model intentionally disabled for Windows stability)
         turn_detection=None,
         vad=ctx.proc.userdata["vad"],
-        # allow the LLM to generate a response while waiting for the end of turn
-        # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
+        # Allow LLM to start generating while waiting for end-of-turn
         preemptive_generation=True,
-
     )
-
-    # To use a realtime model instead of a voice pipeline, use the following session setup instead.
-    # (Note: This is for the OpenAI Realtime API. For other providers, see https://docs.livekit.io/agents/models/realtime/))
-    # 1. Install livekit-agents[openai]
-    # 2. Set OPENAI_API_KEY in .env.local
-    # 3. Add `from livekit.plugins import openai` to the top of this file
-    # 4. Use the following session setup instead of the version above
-    # session = AgentSession(
-    #     llm=openai.realtime.RealtimeModel(voice="marin")
-    # )
-
-    # # Add a virtual avatar to the session, if desired
-    # # For other providers, see https://docs.livekit.io/agents/models/avatar/
-    # avatar = hedra.AvatarSession(
-    #   avatar_id="...",  # See https://docs.livekit.io/agents/models/avatar/plugins/hedra
-    # )
-    # # Start the avatar and wait for it to join
-    # await avatar.start(session, room=ctx.room)
 
     # Initialize the persistent memory database if needed.
     memory.init_db()
@@ -505,7 +723,8 @@ async def my_agent(ctx: JobContext):
     dynamic_prompt = SYSTEM_PROMPT + f"""
 
 # PERSISTENT MEMORY
-A stable caller identifier is available as user_id = \"{user_id}\".
+
+A stable caller identifier is available as user_id = "{user_id}".
 If the caller is known, call lookup_user(user_id) before responding.
 If lookup_user returns stored memory, greet the caller by name and refer naturally to one relevant saved fact.
 If you learn a useful personal detail, ask the caller for explicit permission before saving.
@@ -514,6 +733,7 @@ If the caller says no or refuses, do not save any new information.
 Use clear phrases like "Would you like me to remember that for future conversations?" before saving.
 
 # TOOL USAGE
+
 Use the weather_lookup tool only when the user asks for current weather information, temperature, rain, wind, or weather conditions for a specific city or location.
 The weather_lookup tool uses an external weather service and returns factual information only. If the location cannot be resolved, or the service is unavailable, do not invent weather details.
 If the user asks about weather without a location and the location is known from conversation context or memory, use that remembered location.
@@ -526,16 +746,20 @@ English → English script.
 Hindi → Devanagari script only.
 Telugu → Telugu script only.
 
-Never romanize Hindi or Telugu.
+Never romanize Hindi or Telugu. This is a hard rule.
 
 Hindi example:
 Correct: नमस्ते, मैं आपकी मदद कर सकता हूँ।
 Incorrect: Namaste, main aapki madad kar sakta hoon.
 
+Telugu example:
+Correct: నమస్కారం, నేను మీకు సహాయం చేయగలను.
+Incorrect: Namaskaram, nenu meeku sahayam cheyagalanu.
+
 Keep responses short, natural, and suitable for spoken conversation.
 """
 
-    # Start the session, which initializes the voice pipeline and warms up the models
+    # Connect to the room and start the agent session
     await ctx.connect()
 
     await session.start(
