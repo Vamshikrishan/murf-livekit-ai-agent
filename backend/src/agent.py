@@ -25,11 +25,9 @@ from livekit.agents import (
 )
 from livekit.plugins import murf, silero, google, deepgram
 
-try:
-    from livekit.plugins.turn_detector.multilingual import MultilingualModel
-except ImportError:
-    MultilingualModel = None
-
+# The optional local turn-detector model can fail to initialize on some Windows
+# environments because it loads native inference dependencies. We disable it here
+# to keep the voice session stable and avoid the room being torn down on startup.
 try:
     import livekit.plugins.noise_cancellation as noise_cancellation
 except ImportError:
@@ -252,11 +250,18 @@ If users voluntarily share health information, use it only during the current co
 
 # LANGUAGE
 
-Reply in the same language or code-mixed style used by the user.
+Reply in the same language used by the user whenever possible.
 
-Support English, Hindi, Telugu, and natural Indian code-mixed conversations.
+Support:
+- English
+- Hindi
+- Telugu
+- Natural Indian code-mixed conversations
 
-Use simple words that anyone can understand.
+Hindi must always be written in Devanagari script.
+Telugu must always be written in Telugu script.
+
+Never use Romanized Hindi or Romanized Telugu.
 
 # CONVERSATION STYLE
 
@@ -455,14 +460,16 @@ async def my_agent(ctx: JobContext):
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
         tts=murf.TTS(
-                voice="Anisha",
-                style="Conversation",
-                tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
-                text_pacing=True
-            ),
-        # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
-        # See more at https://docs.livekit.io/agents/build/turns
-        turn_detection=MultilingualModel() if MultilingualModel is not None else None,
+        voice="Anisha",
+        locale="en-IN",
+        style="Conversation",
+        tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
+        text_pacing=True,
+        ),
+        # VAD and turn detection are used to determine when the user is speaking and when the agent should respond.
+        # The local turn detector is intentionally disabled here because it can fail to initialize on some Windows
+        # environments due to native inference DLL issues.
+        turn_detection=None,
         vad=ctx.proc.userdata["vad"],
         # allow the LLM to generate a response while waiting for the end of turn
         # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
@@ -512,10 +519,25 @@ The weather_lookup tool uses an external weather service and returns factual inf
 If the user asks about weather without a location and the location is known from conversation context or memory, use that remembered location.
 
 # LANGUAGE & SCRIPT
-Always write every language in its own native script. Hindi responses must use Devanagari script, never romanized Hindi.
+
+Always respond in the language used by the user whenever possible.
+
+English → English script.
+Hindi → Devanagari script only.
+Telugu → Telugu script only.
+
+Never romanize Hindi or Telugu.
+
+Hindi example:
+Correct: नमस्ते, मैं आपकी मदद कर सकता हूँ।
+Incorrect: Namaste, main aapki madad kar sakta hoon.
+
+Keep responses short, natural, and suitable for spoken conversation.
 """
 
     # Start the session, which initializes the voice pipeline and warms up the models
+    await ctx.connect()
+
     await session.start(
         agent=Assistant(instructions=dynamic_prompt),
         room=ctx.room,
@@ -534,7 +556,6 @@ Always write every language in its own native script. Hindi responses must use D
             )
         ),
     )
-    await ctx.connect()
 
 
 if __name__ == "__main__":
