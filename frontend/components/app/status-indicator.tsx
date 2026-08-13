@@ -8,7 +8,9 @@ interface StatusIndicatorProps {
 }
 
 export function StatusIndicator({ className }: StatusIndicatorProps) {
-  const { isConnected, isConnecting } = useSessionContext();
+  const session = useSessionContext();
+  const isConnected = session.isConnected;
+  const isConnecting = session.connectionState === 'connecting';
   const { state: agentState } = useAgent();
   const [lastConnected, setLastConnected] = useState(false);
 

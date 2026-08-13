@@ -273,6 +273,44 @@ The LLM decides when to call the weather tool automatically. Normal conversation
 
 ---
 
+## Day 8 — Call Analytics Dashboard
+
+This project now includes a lightweight analytics layer based on the existing SQLite memory database and a new `call_analytics` table.
+
+- The backend stores a real call record whenever a LiveKit session starts.
+- Each call is closed with a final outcome of `success`, `failed`, or `in_progress` while the session is active.
+- The summary endpoint reads actual persisted data and returns:
+  - `total_calls`
+  - `successful_calls`
+  - `failed_calls`
+  - `success_rate`
+- The frontend exposes a dashboard at `/analytics` backed by the same call records.
+
+### Backend
+
+- `backend/src/analytics.py` creates the SQLite table and provides:
+  - `start_call_record(...)`
+  - `close_call_record(...)`
+  - `get_analytics_summary()`
+  - `get_recent_calls(...)`
+- `backend/src/agent.py` starts a call record when a session begins and closes it when the room disconnects or the session ends.
+- API route: `GET /api/analytics`
+- Recent call route: `GET /api/analytics/calls`
+
+### Frontend
+
+The dashboard is available at `/analytics` and displays:
+
+- Total Calls
+- Successful Calls
+- Failed Calls
+- Success Rate
+- Recent call history table
+
+This is powered by real stored analytics data, not hardcoded values.
+
+---
+
 ## Configuration
 
 ### Murf voice

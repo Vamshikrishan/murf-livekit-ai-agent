@@ -36,6 +36,7 @@ try:
 except ImportError:
     noise_cancellation = None
 
+import analytics
 import memory
 
 logger = logging.getLogger("agent")
@@ -108,6 +109,31 @@ def _geocode_location(location: str) -> Optional[Dict[str, Any]]:
 
 def _weather_description(code: int) -> str:
     return WEATHER_CODE_MAP.get(code, "Weather condition")
+
+
+def _detect_call_channel(ctx: JobContext) -> str:
+    """Determine a safe channel label for the active call without storing PII."""
+    try:
+        participant_kind = getattr(getattr(ctx, "local_participant", None), "kind", None)
+        if participant_kind is not None:
+            try:
+                from livekit import rtc
+
+                if participant_kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP:
+                    return "sip"
+            except Exception:
+                pass
+
+        room_name = getattr(ctx.room, "name", "")
+        if room_name and "sip" in room_name.lower():
+            return "sip"
+
+        if room_name and "browser" in room_name.lower():
+            return "browser"
+
+        return "browser"
+    except Exception:
+        return "unknown"
 
 
 def _fetch_weather(latitude: float, longitude: float, timezone: str) -> Optional[Dict[str, Any]]:
@@ -412,8 +438,31 @@ Hello! I'm AarogyaMitra, your multilingual AI health assistant. I can help you u
 class Assistant(Agent):
     def __init__(self, instructions: str = SYSTEM_PROMPT) -> None:
         super().__init__(instructions=instructions)
+        self.call_id: str | None = None
+        self.call_outcome: str | None = None
+        self.call_failure_reason: str | None = None
         # Track escalations created this session to prevent duplicates
         self._escalated_ref_ids: set[str] = set()
+
+    def set_call_outcome(self, outcome: str, failure_reason: str | None = None) -> None:
+        normalized = (outcome or "failed").strip().lower()
+        if normalized not in {"success", "failed"}:
+            normalized = "failed"
+        if normalized == "success":
+            self.call_outcome = "success"
+            self.call_failure_reason = None
+        else:
+            if self.call_outcome is None:
+                self.call_outcome = "failed"
+            self.call_failure_reason = failure_reason
+
+    async def on_user_turn_completed(
+        self, turn_ctx: Any, new_message: Any
+    ) -> None:
+        content = getattr(new_message, "content", "")
+        if self.call_outcome is None and isinstance(content, str) and content.strip():
+            if len(content.strip()) > 32:
+                self.set_call_outcome("success")
 
     @function_tool(
         name="weather_lookup",
@@ -590,6 +639,7 @@ class Assistant(Agent):
             logger.warning(
                 "Duplicate escalation detected for problem key, suppressing re-send."
             )
+            self.set_call_outcome("success")
             return {
                 "status": "duplicate",
                 "message": "A human assistance request for this issue was already created this session.",
@@ -647,6 +697,7 @@ class Assistant(Agent):
 
         if delivered:
             logger.info("Escalation delivered to Discord successfully reference_id=%s", reference_id)
+            self.set_call_outcome("success")
             return {
                 "status": "created",
                 "reference_id": reference_id,
@@ -660,6 +711,7 @@ class Assistant(Agent):
             }
         else:
             logger.error("Escalation Discord delivery failed reference_id=%s", reference_id)
+            self.set_call_outcome("failed", failure_reason="escalation_delivery_failed")
             return {
                 "status": "delivery_failed",
                 "reference_id": reference_id,
@@ -683,6 +735,30 @@ server.setup_fnc = prewarm
 
 @server.rtc_session(agent_name="my-agent")
 async def my_agent(ctx: JobContext):
+    analytics.init_db()
+    call_id = analytics.start_call_record(channel=_detect_call_channel(ctx))
+    agent = None
+
+    def finalize_call(reason: str | None = None) -> None:
+        nonlocal agent
+        if agent is not None and agent.call_id is None:
+            agent.call_id = call_id
+        if call_id:
+            outcome = "failed"
+            if getattr(agent, "call_outcome", None) == "success":
+                outcome = "success"
+            analytics.close_call_record(
+                call_id,
+                outcome=outcome,
+                failure_reason=reason if outcome == "failed" else None,
+            )
+            logger.info(
+                "Call analytics closed call_id=%s outcome=%s failure_reason=%s",
+                call_id,
+                outcome,
+                reason,
+            )
+
     # Logging setup — no credentials logged here
     ctx.log_context_fields = {
         "room": ctx.room.name,
@@ -720,6 +796,12 @@ async def my_agent(ctx: JobContext):
     if not user_id:
         user_id = ctx.room.name
 
+    ctx.room.on("disconnected", lambda reason: finalize_call(f"room_disconnected:{reason}"))
+    ctx.room.on(
+        "participant_disconnected",
+        lambda participant: finalize_call(f"participant_disconnected:{getattr(participant, 'identity', 'unknown')}"),
+    )
+
     dynamic_prompt = SYSTEM_PROMPT + f"""
 
 # PERSISTENT MEMORY
@@ -745,8 +827,9 @@ Always respond in the language used by the user whenever possible.
 English → English script.
 Hindi → Devanagari script only.
 Telugu → Telugu script only.
+All other non-English languages should also use their native script.
 
-Never romanize Hindi or Telugu. This is a hard rule.
+Never romanize Hindi, Telugu, or any other non-English language. This is a hard rule.
 
 Hindi example:
 Correct: नमस्ते, मैं आपकी मदद कर सकता हूँ।
@@ -759,27 +842,36 @@ Incorrect: Namaskaram, nenu meeku sahayam cheyagalanu.
 Keep responses short, natural, and suitable for spoken conversation.
 """
 
-    # Connect to the room and start the agent session
-    await ctx.connect()
+    agent = Assistant(instructions=dynamic_prompt)
+    agent.call_id = call_id
 
-    await session.start(
-        agent=Assistant(instructions=dynamic_prompt),
-        room=ctx.room,
-        room_options=room_io.RoomOptions(
-            audio_input=room_io.AudioInputOptions(
-                noise_cancellation=(
-                    None
-                    if noise_cancellation is None
-                    else lambda params: (
-                        noise_cancellation.BVCTelephony()
-                        if params.participant.kind
-                        == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
-                        else noise_cancellation.BVC()
+    try:
+        # Connect to the room and start the agent session
+        await ctx.connect()
+
+        await session.start(
+            agent=agent,
+            room=ctx.room,
+            room_options=room_io.RoomOptions(
+                audio_input=room_io.AudioInputOptions(
+                    noise_cancellation=(
+                        None
+                        if noise_cancellation is None
+                        else lambda params: (
+                            noise_cancellation.BVCTelephony()
+                            if params.participant.kind
+                            == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+                            else noise_cancellation.BVC()
+                        )
                     )
                 )
-            )
-        ),
-    )
+            ),
+        )
+    except Exception:
+        finalize_call("session_exception")
+        raise
+    finally:
+        finalize_call("session_end")
 
 
 if __name__ == "__main__":
