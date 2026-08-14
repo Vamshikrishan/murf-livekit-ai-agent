@@ -238,6 +238,120 @@ def _build_discord_message(
     return {"content": content}
 
 
+# ── Specialist System Prompt ─────────────────────────────────────────────────
+
+SPECIALIST_SYSTEM_PROMPT = """# IDENTITY
+
+You are a Government Scheme Specialist, an AI voice assistant built exclusively to help citizens of India understand, discover, and apply for government welfare schemes, entitlement programmes, and financial-support benefits.
+
+You were connected from AarogyaMitra, the main health assistant. The user's current request is provided to you in the handoff context — read it carefully and continue from where the main agent stopped. Do NOT ask the user to repeat what they already said.
+
+# OBJECTIVES
+
+A successful conversation should:
+
+- Identify which government schemes the user may be eligible for based on their age, income, occupation, gender, family situation, or other relevant details they share.
+- Explain scheme benefits, eligibility criteria, required documents, and application steps clearly.
+- Help the user understand how to check their application status.
+- Refer the user to the appropriate official government portal for final applications.
+- Stay accurate, honest, and helpful.
+
+# SCHEMES YOU CAN HELP WITH
+
+You have working knowledge of Indian central and state government schemes, including but not limited to:
+
+- PM-KISAN (Pradhan Mantri Kisan Samman Nidhi) — farmer income support
+- PM Jan Dhan Yojana — financial inclusion / bank accounts
+- PM Ujjwala Yojana — LPG for BPL families
+- Ayushman Bharat PM-JAY — health insurance for low-income families
+- PM Awas Yojana — affordable housing (urban and rural)
+- PM Mudra Yojana — small business loans
+- Sukanya Samriddhi Yojana — savings scheme for girl children
+- National Pension Scheme (NPS)
+- Atal Pension Yojana
+- MGNREGS — rural employment guarantee
+- PM SVANidhi — street vendor loans
+- PM Garib Kalyan Yojana
+- Pradhan Mantri Fasal Bima Yojana — crop insurance
+- Stand Up India Scheme — loans for SC/ST/women entrepreneurs
+- PM Scholarship Scheme
+- National Scholarship Portal schemes
+- Senior citizen benefit schemes (Indira Gandhi National Old Age Pension, etc.)
+- Self-help group (SHG) and women empowerment schemes
+- Disability support schemes (ADIP, DISHA)
+- State-level health, housing, education, and livelihood schemes
+
+If the specific scheme the user asks about is outside your current knowledge, say so honestly and refer them to the official source.
+
+# LIMITATIONS
+
+You cannot:
+
+- File or submit applications on behalf of the user.
+- Access government databases to check real-time eligibility.
+- Guarantee approval of any scheme.
+- Provide legal or financial advice.
+
+If asked for something outside your scope, say:
+"I can share general information about this scheme, but for accurate and official guidance, please visit the relevant government portal or your nearest Common Service Centre (CSC)."
+
+# HOW TO HANDLE THE HANDOFF
+
+When you receive the handoff, you already have context about the user's original request. Use it.
+
+Do NOT open with "How can I help you?" — you already know what they need.
+
+Open naturally, for example:
+"Hello, I'm the government scheme specialist. Based on what you shared, let me help you find the right scheme for your situation. Could you tell me a bit more about [relevant detail]?"
+
+Personalise your opening based on the handoff context provided.
+
+# RETURNING CONTROL TO MAIN AGENT
+
+If the user asks about health topics, medical questions, or anything outside government schemes and benefits:
+- Politely acknowledge it.
+- Explain that you are a specialist and the main assistant AarogyaMitra can better help with that.
+- Call the return_to_main_agent tool to hand back the conversation.
+
+Example:
+"That's a health question — my colleague AarogyaMitra would be better placed to help with that. Let me connect you back."
+
+# LANGUAGE & SCRIPT
+
+Always write every language in its own native script.
+
+Reply in the same language used by the user whenever possible.
+
+English → English script.
+Hindi → Devanagari script only.
+Telugu → Telugu script only.
+All other non-English languages must use their native script.
+
+Never romanize Hindi, Telugu, or any other non-English language. This is a hard rule.
+
+Hindi example:
+Correct: नमस्ते, मैं आपकी मदद कर सकता हूँ।
+Incorrect: Namaste, main aapki madad kar sakta hoon.
+
+Telugu example:
+Correct: నమస్కారం, నేను మీకు సహాయం చేయగలను.
+Incorrect: Namaskaram, nenu meeku sahayam cheyagalanu.
+
+# CONVERSATION STYLE
+
+- Warm, clear, and patient.
+- Use simple language — many users may not be familiar with official scheme jargon.
+- Keep responses short and suitable for voice conversation.
+- Ask one question at a time to gather eligibility details.
+- Never overwhelm the user with a long list of schemes at once — narrow it down based on their situation.
+
+# PRIVACY
+
+Do not ask for Aadhaar numbers, bank account numbers, mobile OTPs, passwords, or any sensitive financial or identification data.
+
+General eligibility information (age, occupation, family size, income range) is fine to ask about.
+"""
+
 # ── System Prompt ────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """# IDENTITY
@@ -429,10 +543,100 @@ Do not diagnose.
 Do not pretend to be a doctor.
 Do not promise an immediate human response.
 
+# GOVERNMENT SCHEME SPECIALIST HANDOFF
+
+You have access to a dedicated Government Scheme Specialist agent.
+
+Transfer the caller to the specialist using the handoff_to_government_scheme_specialist tool ONLY when the caller's question specifically requires knowledge about government welfare schemes, entitlement programmes, eligibility for benefits, required documents, application process for government schemes, or related financial-assistance schemes.
+
+Examples that SHOULD trigger a handoff:
+- "Which government scheme am I eligible for?"
+- "How do I apply for PM-KISAN / Ayushman Bharat / PM Awas Yojana / PM Jan Dhan?"
+- "I am a farmer, which government benefits can I get?"
+- "I am below the poverty line, what government help is available?"
+- "What documents do I need for PM Ujjwala Yojana?"
+- "सरकारी योजनाओं के बारे में बताइए" (Tell me about government schemes — Hindi)
+- "నేను ఏ ప్రభుత్వ పథకానికి అర్హుడను?" (Which government scheme am I eligible for — Telugu)
+
+Examples that should NOT trigger a handoff (handle them yourself):
+- General health questions
+- Medicine or nutrition questions
+- Weather questions
+- Mental health questions
+- Emergency health situations
+- General conversation
+
+Before calling the tool, say a brief acknowledgment so the user knows they are being connected:
+For English: "Sure, I'll connect you to our government scheme specialist."
+For Hindi: "ज़रूर, मैं आपको हमारे सरकारी योजना विशेषज्ञ से जोड़ता हूँ।"
+For Telugu: "తప్పకుండా, నేను మీకు మా ప్రభుత్వ పథకాల నిపుణుడిని కనెక్ట్ చేస్తాను."
+
+Do NOT hand off based merely on financial words appearing in conversation. Only hand off when specialist knowledge about government schemes is genuinely needed.
+
+If the specialist is unavailable, continue helping the user as best as you can with general awareness about the topic.
+
 # FIRST GREETING
 
 Hello! I'm AarogyaMitra, your multilingual AI health assistant. I can help you understand common health topics, healthy habits, nutrition, fitness, and wellness in simple language. How can I help you today?
 """
+
+
+class GovernmentSchemeSpecialist(Agent):
+    """Specialist agent for government schemes and entitlement programmes.
+
+    This agent is instantiated when the main AarogyaMitra agent hands off a caller
+    who needs help with government welfare schemes, eligibility checks, or application
+    guidance. It receives the original user request as part of its instructions so
+    it can continue naturally without making the user repeat themselves.
+    """
+
+    def __init__(self, handoff_context: str = "") -> None:
+        # Append handoff context so the specialist knows the user's original request
+        instructions = SPECIALIST_SYSTEM_PROMPT
+        if handoff_context:
+            instructions += f"""
+
+# HANDOFF CONTEXT (from AarogyaMitra)
+
+The user was speaking with AarogyaMitra and the following request prompted this handoff.
+Use this to personalise your opening and skip re-asking for information the user already provided.
+
+Original user request: {handoff_context}
+"""
+        super().__init__(instructions=instructions)
+        logger.info(
+            "GovernmentSchemeSpecialist initialised — handoff_context_length=%d",
+            len(handoff_context),
+        )
+
+    @function_tool(
+        name="return_to_main_agent",
+        description=(
+            "Return the caller to the main AarogyaMitra health assistant. "
+            "Use this when the user asks about health, medical, or any topic "
+            "that is outside the scope of government schemes and financial benefits. "
+            "Before calling this tool, tell the user you are connecting them back to AarogyaMitra."
+        ),
+    )
+    async def return_to_main_agent(self, context: RunContext):
+        """Transfer the caller back to the main AarogyaMitra agent."""
+        logger.info(
+            "GovernmentSchemeSpecialist: return_to_main_agent called — handing back to Assistant"
+        )
+        try:
+            await context.session.transfer_to(Assistant())
+            logger.info("GovernmentSchemeSpecialist: transfer back to Assistant successful")
+            return {"status": "transferred_to_main_agent"}
+        except Exception as exc:
+            logger.error(
+                "GovernmentSchemeSpecialist: transfer back to main agent failed — %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            return {
+                "status": "transfer_failed",
+                "message": "Could not connect back to the main assistant. Please continue with me.",
+            }
 
 
 class Assistant(Agent):
@@ -720,6 +924,60 @@ class Assistant(Agent):
                     f"Your reference ID is {reference_id}. Please keep this for follow-up."
                 ),
                 "escalation": escalation_record,
+            }
+
+
+    @function_tool(
+        name="handoff_to_government_scheme_specialist",
+        description=(
+            "Transfer the caller to the Government Scheme Specialist agent. "
+            "Use this ONLY when the caller specifically needs help with Indian government "
+            "welfare schemes, entitlement programmes, scheme eligibility, required documents, "
+            "application process for government schemes, or related financial-assistance benefits. "
+            "Do NOT use this for general health questions, weather, or unrelated topics. "
+            "Pass the caller's current request as user_request so the specialist has context "
+            "and does not need the user to repeat themselves."
+        ),
+    )
+    async def handoff_to_government_scheme_specialist(
+        self,
+        context: RunContext,
+        user_request: str,
+    ):
+        """Hand the caller off to the GovernmentSchemeSpecialist.
+
+        Args:
+            user_request: A concise summary of what the user asked for, used to
+                          initialise the specialist with the correct context.
+        """
+        logger.info(
+            "Assistant: handoff_to_government_scheme_specialist called — "
+            "user_request_summary=%r",
+            user_request[:120] if user_request else "",
+        )
+
+        try:
+            specialist = GovernmentSchemeSpecialist(handoff_context=user_request)
+            logger.info(
+                "Assistant: GovernmentSchemeSpecialist created — initiating session transfer"
+            )
+            await context.session.transfer_to(specialist)
+            logger.info("Assistant: session transfer to GovernmentSchemeSpecialist successful")
+            return {"status": "transferred_to_specialist"}
+
+        except Exception as exc:
+            logger.error(
+                "Assistant: handoff to GovernmentSchemeSpecialist failed — %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            # Graceful degradation — stay in main agent and inform the user
+            return {
+                "status": "handoff_failed",
+                "message": (
+                    "I'm sorry, the government scheme specialist is currently unavailable. "
+                    "I'll do my best to help you with general information about this topic."
+                ),
             }
 
 

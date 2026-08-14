@@ -236,6 +236,119 @@ backend/
 └── railway.toml           # Railway deploy config
 ```
 
+## Day 9 — Specialist Agent Handoff
+
+This release adds a dedicated **Government Scheme Specialist** agent and a clean handoff mechanism so the main AarogyaMitra agent can transfer callers who need help with Indian government welfare schemes.
+
+### Architecture
+
+```
+User speaks → AarogyaMitra (main agent)
+                   │
+                   ├── Normal questions (health, weather, etc.)
+                   │         └── Answered directly by AarogyaMitra
+                   │
+                   └── Government scheme questions
+                             │
+                             ▼
+                   [handoff_to_government_scheme_specialist tool]
+                             │
+                             ▼
+                   GovernmentSchemeSpecialist
+                   (continues from where AarogyaMitra stopped)
+                             │
+                             └── Off-topic questions → return_to_main_agent tool
+                                       └── Back to AarogyaMitra
+```
+
+### Agent responsibilities
+
+| Agent | Responsibility |
+|---|---|
+| **AarogyaMitra** (main) | Health, wellness, nutrition, fitness, emergencies, general conversation, weather — everything except government schemes. |
+| **GovernmentSchemeSpecialist** | Helping users discover Indian government welfare schemes (PM-KISAN, Ayushman Bharat, PM Awas Yojana, PM Jan Dhan, Mudra Yojana, etc.), check eligibility, understand required documents, and learn the application process. |
+
+### Handoff trigger
+
+The main agent calls `handoff_to_government_scheme_specialist` when the caller asks about:
+
+- Which government scheme they are eligible for
+- How to apply for a specific central or state scheme
+- Benefits, documents, or eligibility criteria for government programmes
+- Government financial assistance based on occupation, income, or family situation
+
+The agent does **not** hand off for general health questions, weather, or unrelated topics.
+
+### Context preservation
+
+When `handoff_to_government_scheme_specialist` is called, the main agent passes the caller's original request as `user_request`. The specialist receives this as part of its instructions so it can open naturally without asking the user to repeat themselves.
+
+No duplicate memory systems are created — the existing SQLite memory layer is unchanged.
+
+### Returning control
+
+If the user asks the specialist a health or off-topic question, the specialist calls `return_to_main_agent`, which transfers the session back to a fresh `Assistant` instance.
+
+### Error handling
+
+If `session.transfer_to()` raises an exception during handoff (either direction), the error is logged and the calling agent returns a graceful fallback message. The call continues without crashing.
+
+### How to test
+
+Run the full test suite (requires API keys in `.env.local`):
+
+```bash
+cd backend
+uv run pytest
+```
+
+**Test 1 — Normal path** (`test_no_handoff_for_general_question`):
+
+Say to the agent:
+```
+"What is the weather today?"
+```
+
+Expected: AarogyaMitra answers directly (asks for a city, or explains it needs a location). No handoff tool is called.
+
+**Test 2 — Specialist path** (`test_handoff_triggered_for_government_scheme_request`):
+
+Say to the agent:
+```
+"Can you help me find a government scheme I may be eligible for?"
+```
+
+Expected:
+1. AarogyaMitra says "Sure, I'll connect you to our government scheme specialist."
+2. `handoff_to_government_scheme_specialist` tool is called.
+3. GovernmentSchemeSpecialist takes over and greets the user.
+
+**Test 3 — Context preservation** (`test_specialist_agent_knows_user_request`):
+
+The specialist is started with pre-loaded context:
+```
+"I am a small farmer with low income. Which government scheme can help me?"
+```
+
+Expected: The specialist's opening response references the farmer context and mentions relevant schemes (like PM-KISAN) — it does not ask "How can I help you?" as if no context was given.
+
+**Manual voice test phrases:**
+
+| Language | Phrase |
+|---|---|
+| English | "I want to know which government scheme I am eligible for." |
+| Hindi | "मुझे बताइए कि मैं किस सरकारी योजना के लिए पात्र हूँ।" |
+| Telugu | "నేను ఏ ప్రభుత్వ పథకానికి అర్హుడనో చెప్పగలరా?" |
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `src/agent.py` | Added `SPECIALIST_SYSTEM_PROMPT`, `GovernmentSchemeSpecialist` class with `return_to_main_agent` tool, `handoff_to_government_scheme_specialist` tool on `Assistant`, `GOVERNMENT SCHEME SPECIALIST HANDOFF` section in `SYSTEM_PROMPT`, debug logging throughout. |
+| `tests/test_agent.py` | Added `test_no_handoff_for_general_question`, `test_handoff_triggered_for_government_scheme_request`, `test_specialist_agent_knows_user_request`. |
+
+---
+
 ## Links
 
 - [Murf Falcon TTS Docs](https://murf.ai/api/docs/text-to-speech/streaming)

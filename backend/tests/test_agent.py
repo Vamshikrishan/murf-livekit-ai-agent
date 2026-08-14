@@ -1,7 +1,7 @@
 import pytest
 from livekit.agents import AgentSession, inference, llm
 
-from agent import Assistant
+from agent import Assistant, GovernmentSchemeSpecialist
 
 
 def _llm() -> llm.LLM:
@@ -107,4 +107,142 @@ async def test_refuses_harmful_request() -> None:
         )
 
         # Ensures there are no function calls or other unexpected events
+        result.expect.no_more_events()
+
+
+# ── Day 9: Specialist Handoff Tests ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_no_handoff_for_general_question() -> None:
+    """Day 9 — TEST 1: Normal path.
+
+    A general question (weather) should be answered by the main agent directly.
+    The handoff_to_government_scheme_specialist tool must NOT be called.
+    """
+    async with (
+        _llm() as llm,
+        AgentSession(llm=llm) as session,
+    ):
+        await session.start(Assistant())
+
+        result = await session.run(user_input="What is the weather today?")
+
+        # The agent should respond with a message — not call the handoff tool
+        await (
+            result.expect.next_event()
+            .is_message(role="assistant")
+            .judge(
+                llm,
+                intent="""
+                The assistant answers the weather question directly or explains it cannot
+                fetch weather without a location — it does NOT transfer the user to a
+                government scheme specialist.
+
+                The response must NOT:
+                - Mention government schemes
+                - Mention a specialist agent or handoff
+                - Say it is connecting the user to someone else
+
+                The response may:
+                - Ask for a city name to look up weather
+                - Explain it needs a location
+                - Provide general weather guidance
+                """,
+            )
+        )
+
+        # Ensures no function-call or transfer events are emitted
+        result.expect.no_more_events()
+
+
+@pytest.mark.asyncio
+async def test_handoff_triggered_for_government_scheme_request() -> None:
+    """Day 9 — TEST 2: Specialist path.
+
+    When the user asks about government scheme eligibility the main agent must:
+    1. Acknowledge the request and say it will connect to the specialist.
+    2. Call the handoff_to_government_scheme_specialist function tool.
+    """
+    async with (
+        _llm() as llm,
+        AgentSession(llm=llm) as session,
+    ):
+        await session.start(Assistant())
+
+        result = await session.run(
+            user_input="Can you help me find a government scheme I may be eligible for?"
+        )
+
+        # Step 1 — agent should produce a brief handoff acknowledgment message
+        await (
+            result.expect.next_event()
+            .is_message(role="assistant")
+            .judge(
+                llm,
+                intent="""
+                The assistant acknowledges the user's request about government schemes and
+                says it will connect them to the specialist.
+
+                The response must:
+                - Mention connecting the user to a specialist, expert, or colleague
+                - Be brief and reassuring (one or two sentences)
+
+                The response must NOT:
+                - Start answering the government scheme question itself in detail
+                - Ask clarifying health questions
+                """,
+            )
+        )
+
+        # Step 2 — agent must call the handoff tool (function_call event)
+        result.expect.next_event().is_function_call(
+            name="handoff_to_government_scheme_specialist"
+        )
+
+
+@pytest.mark.asyncio
+async def test_specialist_agent_knows_user_request() -> None:
+    """Day 9 — specialist receives the user's original request via handoff context.
+
+    The GovernmentSchemeSpecialist's opening response must reference the topic
+    and not ask the user to repeat the entire problem.
+    """
+    original_request = "I am a small farmer with low income. Which government scheme can help me?"
+
+    async with (
+        _llm() as llm,
+        AgentSession(llm=llm) as session,
+    ):
+        await session.start(
+            GovernmentSchemeSpecialist(handoff_context=original_request)
+        )
+
+        # Give the specialist a neutral opener — it should already know the context
+        result = await session.run(user_input="Hello")
+
+        await (
+            result.expect.next_event()
+            .is_message(role="assistant")
+            .judge(
+                llm,
+                intent="""
+                The specialist introduces itself as a government scheme specialist and
+                continues naturally from the user's original request about being a small
+                farmer looking for government scheme support.
+
+                The response must:
+                - Acknowledge the farmer / agricultural context from the handoff
+                - NOT ask the user to re-explain the full request from scratch
+                - Mention at least one relevant scheme area (e.g. PM-KISAN, crop insurance,
+                  farmer income support) OR ask a focused follow-up question
+                  (e.g. land size, state) to narrow down eligibility
+
+                The response must NOT:
+                - Open with a generic "How can I help you today?" as if no context was given
+                - Ignore the farmer context entirely
+                """,
+            )
+        )
+
         result.expect.no_more_events()
